@@ -9,6 +9,7 @@ This is the official codebase of the paper [BEACON: Benchmark for Comprehensive 
 ## 🔥 Update
 - [07/25]🔥 Updating models list and usage!
 - [06/11]🔥 BEACON is coming! We release the [paper](https://arxiv.org/abs/2406.10391), [code](https://github.com/terry-r123/RNABenchmark), [data](https://drive.google.com/drive/folders/19ddrwI8ycvIxkgSV3gDo_VunLofYd4-6?usp=sharing), and [models](https://drive.google.com/drive/folders/1455JIOGV5X96CCgxCT-QgVu0xbXFz72X?usp=sharing) for BEACON!
+- [02/15] Added EcoRNA inference/finetuning integration for BEACON tasks (opensource pipeline).
 
 ## Prerequisites
 
@@ -22,6 +23,15 @@ cd RNABenchmark
 conda create -n beacon python=3.8
 pip install -r requirements.txt
 ```
+
+For EcoRNA, use a modern PyTorch/Transformers stack. In practice, these are required:
+- `torch>=2.2`
+- `transformers>=4.40`
+- `accelerate>=0.27`
+- `tokenizers>=0.15`
+- `safetensors>=0.4`
+- `liger-kernel` (required if the checkpoint was trained with Liger MLP)
+- `flash-attn` (recommended for speed; numerically equivalent attention output)
 
 ## 🔍 Tasks and Datasets
 
@@ -138,6 +148,7 @@ And the list of available embedders/models used for training on the tasks are :
 |[UTRBERT-6mer](https://doi.org/10.1101/2023.09.08.556883) | utrbert-6mer | 6mer |ape| 512 |
 |[BEACON-B](https://arxiv.org/abs/2406.10391)| rnalm | single | alibi | 1026 |
 |[BEACON-B512](https://arxiv.org/abs/2406.10391)| rnalm | single | alibi | 512 |
+|[EcoRNA](https://github.com/cpa2001/Eco-RNA) | ecorna | single | rope (checkpoint-defined) | 1024 |
 
 
 
@@ -148,6 +159,37 @@ To evalute on all RNA tasks, you can run the bash scripts in the `scripts` folde
 cd RNABenchmark
 bash ./scripts/BEACON-B/all_task.sh
 ```
+
+### EcoRNA on NoncodingRNAFamily
+This repository includes an opensource script for running EcoRNA and RNA-FM on the NoncodingRNAFamily task:
+
+```bash
+cd RNABenchmark
+bash scripts/opensource/run_ncrna.sh ecorna
+```
+
+Common runtime controls:
+- `GPU_DEVICE` (e.g. `0,1,2,3`)
+- `NPROC_PER_NODE` (e.g. `4`)
+- `ECORNA_CHECKPOINT` (default: `../../output/ecorna-RNA-stage-d-100k`)
+- `ECORNA_POOLING_STRATEGY` (`cls_tanh`, `cls`, `mean`, `cls_mean_concat`, ...)
+- `ECORNA_NUM_LOOPS` (`1`, `2`, `3`, or `-1` to use checkpoint default)
+- `SEED`
+
+Example:
+```bash
+GPU_DEVICE=0,1,2,3 \
+NPROC_PER_NODE=4 \
+SEED=666 \
+ECORNA_CHECKPOINT=../../output/ecorna-RNA-stage-d-100k \
+ECORNA_POOLING_STRATEGY=cls \
+ECORNA_NUM_LOOPS=3 \
+bash scripts/opensource/run_ncrna.sh ecorna \
+  --max_steps 1200 --save_steps 400 --eval_steps 200 --logging_steps 200
+```
+
+The test metrics are written to:
+`outputs/ft/rna-all/NoncodingRNAFamily/ecorna/<pooling>/loops-<loops>/<seed>/results/ecorna_ncrna/test_results.json`
 ### Computing embeddings
 Embeddings from a dummy RNA sequence can be used as follows:
 
@@ -188,4 +230,3 @@ If you find this repo useful for your research, please consider citing the paper
       primaryClass={id='q-bio.QM' full_name='Quantitative Methods' is_active=True alt_name=None in_archive='q-bio' is_general=False description='All experimental, numerical, statistical and mathematical contributions of value to biology'}
 }
 ```
-
