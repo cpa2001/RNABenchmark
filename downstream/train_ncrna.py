@@ -34,7 +34,13 @@ from model.rnamsm.modeling_rnamsm import RnaMsmForSequenceClassification
 from model.splicebert.modeling_splicebert import SpliceBertForSequenceClassification
 from model.utrbert.modeling_utrbert import UtrBertForSequenceClassification
 from model.utrlm.modeling_utrlm import UtrLmForSequenceClassification
+from model.ecorna.modeling_ecorna import EcoRNAForSequenceClassification
 from tokenizer.tokenization_opensource import OpenRnaLMTokenizer
+
+# Add ecorna repo to path for EcoRNA imports
+ecorna_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(parent_dir)))
+if ecorna_repo_root not in sys.path:
+    sys.path.insert(0, ecorna_repo_root)
 early_stopping = EarlyStoppingCallback(early_stopping_patience=20)
 @dataclass
 class ModelArguments:
@@ -70,7 +76,7 @@ class TrainingArguments(transformers.TrainingArguments):
     logging_steps: int = field(default=100)
     save_steps: int = field(default=100)
     eval_steps: int = field(default=100)
-    evaluation_strategy: str = field(default="steps"),
+    eval_strategy: str = field(default="steps")
     warmup_steps: int = field(default=50)
     weight_decay: float = field(default=0.01)
     learning_rate: float = field(default=1e-4)
@@ -93,6 +99,8 @@ class TrainingArguments(transformers.TrainingArguments):
     attn_implementation: str = field(default="eager")
     dataloader_num_workers: int = field(default=4)
     dataloader_prefetch_factor: int = field(default=2)
+    ecorna_pooling_strategy: str = field(default="cls_tanh")
+    ecorna_num_loops: int = field(default=-1)
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
     state_dict = trainer.model.state_dict()
@@ -105,8 +113,7 @@ def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if torch.distributed.get_rank() >= 0:
-        print("!!!!!!!!!!!!!", "Yes")
+    if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
 
@@ -249,14 +256,18 @@ def train():
             use_fast=True,
             trust_remote_code=True,
         )
+    elif training_args.model_type == 'ecorna':
+        from ecorna import EcoRNATokenizer
+        # EcoRNA uses single-char tokenizer, replace_u_with_t=True to match BEACON convention
+        tokenizer = EcoRNATokenizer(
+            replace_u_with_t=True,
+            model_max_length=training_args.model_max_length,
+        )
     elif training_args.model_type in ['rna-fm','rnabert','rnamsm','splicebert-human510','splicebert-ms510','splicebert-ms1024','utrbert-3mer','utrbert-4mer','utrbert-5mer','utrbert-6mer','utr-lm-mrl','utr-lm-te-el']:
-        tokenizer = OpenRnaLMTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
+        # Initialize tokenizer directly instead of from_pretrained to avoid compatibility issues
+        tokenizer = OpenRnaLMTokenizer(
             model_max_length=training_args.model_max_length,
             padding_side="right",
-            use_fast=True,
-            trust_remote_code=True,
         )
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -370,6 +381,20 @@ def train():
             num_labels=train_dataset.num_labels,
             problem_type="single_label_classification",
             trust_remote_code=True,
+        )
+    elif training_args.model_type == 'ecorna':
+        print(training_args.model_type)
+        print(f'Loading {training_args.model_type} model')
+        num_loops = training_args.ecorna_num_loops if training_args.ecorna_num_loops > 0 else None
+        model = EcoRNAForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            num_labels=train_dataset.num_labels,
+            problem_type="single_label_classification",
+            trust_remote_code=True,
+            token_type=training_args.token_type,
+            pooling_strategy=training_args.ecorna_pooling_strategy,
+            num_loops=num_loops,
         )     
         
 
@@ -405,4 +430,3 @@ def train():
 
 if __name__ == "__main__":
     train()
-

@@ -43,7 +43,7 @@ class SSCNNPredictor(nn.Module):
         else:
             output = self.extractor(input_ids=input_ids, attention_mask=attention_mask)
 
-        if self.args.model_type == 'rnalm':
+        if self.args.model_type in ['rnalm', 'ecorna']:
             hidden_states = output.last_hidden_state
         elif self.args.model_type in ['rna-fm','rnabert','rnamsm','splicebert-human510','splicebert-ms510','splicebert-ms1024','utrbert-3mer','utrbert-4mer','utrbert-5mer','utrbert-6mer','utr-lm-mrl','utr-lm-te-el']:
             hidden_states = output[0]

@@ -21,6 +21,11 @@ from model.splicebert.modeling_splicebert import SpliceBertModel
 from model.utrbert.modeling_utrbert import UtrBertModel
 from model.utrlm.modeling_utrlm import UtrLmModel
 from tokenizer.tokenization_opensource import OpenRnaLMTokenizer
+
+# Add ecorna repo root for EcoRNA imports
+ecorna_repo_root = os.path.dirname(os.path.dirname(parent_dir))
+if ecorna_repo_root not in sys.path:
+    sys.path.insert(0, ecorna_repo_root)
 def get_extractor(args):
     '''
     '''
@@ -117,7 +122,19 @@ def get_extractor(args):
                 cache_dir=args.cache_dir,
                 trust_remote_code=True,
             )  
-        
+    elif args.model_type == 'ecorna':
+        from ecorna import EcoRNAModel, EcoRNATokenizer
+
+        tokenizer = EcoRNATokenizer(
+            replace_u_with_t=True,
+            model_max_length=args.model_max_length,
+        )
+        print(args.model_type)
+        print(f'Loading {args.model_type} model')
+        extractor = EcoRNAModel.from_pretrained(
+            args.model_name_or_path,
+            trust_remote_code=True,
+        )
+
     print(tokenizer)
     return extractor, tokenizer
-
