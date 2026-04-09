@@ -10,6 +10,7 @@ This is the official codebase of the paper [BEACON: Benchmark for Comprehensive 
 - [07/25]🔥 Updating models list and usage!
 - [06/11]🔥 BEACON is coming! We release the [paper](https://arxiv.org/abs/2406.10391), [code](https://github.com/terry-r123/RNABenchmark), [data](https://drive.google.com/drive/folders/19ddrwI8ycvIxkgSV3gDo_VunLofYd4-6?usp=sharing), and [models](https://drive.google.com/drive/folders/1455JIOGV5X96CCgxCT-QgVu0xbXFz72X?usp=sharing) for BEACON!
 - [02/15] Added EcoRNA inference/finetuning integration for BEACON tasks (opensource pipeline).
+- [04/09] EcoRNA NoncodingRNAFamily release now defaults to the `weighted_layer_content` pooler in the opensource benchmark launcher.
 
 ## Prerequisites
 
@@ -168,11 +169,15 @@ cd RNABenchmark
 bash scripts/opensource/run_ncrna.sh ecorna
 ```
 
+Release recommendation:
+- Frozen / vanilla benchmark default: `weighted_layer_content`
+- Strongest full fine-tune baseline: `cls_tanh`
+
 Common runtime controls:
 - `GPU_DEVICE` (e.g. `0,1,2,3`)
 - `NPROC_PER_NODE` (e.g. `4`)
 - `ECORNA_CHECKPOINT` (default: `../../output/ecorna-RNA-stage-d-100k`)
-- `ECORNA_POOLING_STRATEGY` (`cls_tanh`, `cls`, `mean`, `cls_mean_concat`, ...)
+- `ECORNA_POOLING_STRATEGY` (`cls`, `cls_tanh`, `mean`, `cls_mean_concat`, `loop_mean_cls`, `content_mean`, `cls_ln`, `loop_mean_content`, `layer_weighted`, `loop_layer_attn_content`, `weighted_layer_content`, `weighted_cell_content`, `fixed_cell_content`, `fixed_cell_cls`)
 - `ECORNA_NUM_LOOPS` (`1`, `2`, `3`, or `-1` to use checkpoint default)
 - `SEED`
 
@@ -182,14 +187,57 @@ GPU_DEVICE=0,1,2,3 \
 NPROC_PER_NODE=4 \
 SEED=666 \
 ECORNA_CHECKPOINT=../../output/ecorna-RNA-stage-d-100k \
-ECORNA_POOLING_STRATEGY=cls \
+ECORNA_POOLING_STRATEGY=weighted_layer_content \
 ECORNA_NUM_LOOPS=3 \
 bash scripts/opensource/run_ncrna.sh ecorna \
   --max_steps 1200 --save_steps 400 --eval_steps 200 --logging_steps 200
 ```
 
+Strongest full fine-tune baseline:
+```bash
+GPU_DEVICE=0,1,2,3 \
+NPROC_PER_NODE=4 \
+SEED=666 \
+ECORNA_CHECKPOINT=../../output/ecorna-RNA-stage-d-100k \
+ECORNA_POOLING_STRATEGY=cls_tanh \
+bash scripts/opensource/run_ncrna_ecorna_full_ft_best.sh
+```
+
 The test metrics are written to:
 `outputs/ft/rna-all/NoncodingRNAFamily/ecorna/<pooling>/loops-<loops>/<seed>/results/ecorna_ncrna/test_results.json`
+
+Plain readout validation helpers:
+- `bash scripts/opensource/run_ncrna_plain_readout_pilot.sh`
+- `python scripts/opensource/select_ncrna_plain_readout_winner.py --log_root <pilot_log_root> --output_json <winner.json>`
+- `WINNER_JSON=<winner.json> bash scripts/opensource/run_ncrna_plain_readout_final.sh`
+- `python scripts/opensource/summarize_ncrna_plain_readout.py --winner_json <winner.json> --output_json <summary.json>`
+
+The plain readout launchers track `content_mean` and `cls_ln` under isolated variants, select the pilot winner using validation macro-F1 first (accuracy second), and print/validate EcoRNA tokenizer/config special token truth at startup.
+
+Content-only cross-loop validation helpers:
+- `bash scripts/opensource/run_ncrna_content_loop_pilot.sh`
+- `python scripts/opensource/select_ncrna_content_loop_winner.py --log_root <pilot_log_root> --output_json <winner.json>`
+- `WINNER_JSON=<winner.json> bash scripts/opensource/run_ncrna_content_loop_final.sh`
+- `python scripts/opensource/summarize_ncrna_content_loop.py --winner_json <winner.json> --output_json <summary.json>`
+
+Loop/layer diagnostic helper:
+- `python scripts/opensource/inspect_ncrna_ecorna_features.py --include_loop_layer_content_grid ...`
+
+Weighted-content validation helpers:
+- Unified matrix runner:
+  - `bash scripts/opensource/run_ncrna_weighted_content_matrix.sh phase0`
+  - `PHASE0_JSON=<phase0.json> bash scripts/opensource/run_ncrna_weighted_content_matrix.sh pilot`
+  - `WINNER_JSON=<winner.json> bash scripts/opensource/run_ncrna_weighted_content_matrix.sh final`
+- Thin wrappers:
+  - `bash scripts/opensource/run_ncrna_weighted_content_phase0.sh`
+- `python scripts/opensource/summarize_ncrna_weighted_content_phase0.py --output_json <phase0.json>`
+- `PHASE0_JSON=<phase0.json> bash scripts/opensource/run_ncrna_weighted_content_pilot.sh`
+- `python scripts/opensource/select_ncrna_weighted_content_winner.py --output_json <winner.json>`
+- `WINNER_JSON=<winner.json> bash scripts/opensource/run_ncrna_weighted_content_final.sh`
+- `python scripts/opensource/summarize_ncrna_weighted_content_final.py --output_json <final_summary.json>`
+
+Historical full-ft `cls_tanh` summary helper:
+- `python scripts/opensource/summarize_ncrna_ecorna_full_ft_cls_tanh.py --output_json <full_ft_summary.json>`
 ### Computing embeddings
 Embeddings from a dummy RNA sequence can be used as follows:
 

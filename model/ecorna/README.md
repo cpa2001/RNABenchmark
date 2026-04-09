@@ -22,16 +22,26 @@ If optional fused kernels are unavailable, execution may still run via fallback 
 
 ## Inference Controls
 
-EcoRNA supports test-time looped transformer execution and multiple sequence pooling strategies through environment variables consumed by the RNABenchmark scripts:
+EcoRNA supports test-time looped transformer execution and multiple sequence pooling strategies through environment variables consumed by the RNABenchmark scripts.
+For the current NoncodingRNAFamily release, the recommended default is `weighted_layer_content`:
+
+- Frozen benchmark default: `weighted_layer_content`
+- Strongest historical full fine-tune baseline: `cls_tanh`
 
 - `ECORNA_NUM_LOOPS`: loop count at inference (for test-time scaling studies)
-- `ECORNA_POOLING_STRATEGY`: sequence embedding strategy (for example `cls`, `cls_tanh`, `mean`, `mix`)
+- `ECORNA_POOLING_STRATEGY`: sequence embedding strategy (for example `weighted_layer_content`, `weighted_cell_content`, `cls`, `cls_tanh`, `mean`, `content_mean`, `loop_mean_content`, `loop_mean_cls`)
 - `ECORNA_CHECKPOINT`: path to the pretrained checkpoint
 
 Typical entrypoint for NoncodingRNAFamily:
 
 ```bash
 bash scripts/opensource/run_ncrna.sh ecorna
+```
+
+Full fine-tune strongest-baseline entrypoint:
+
+```bash
+bash scripts/opensource/run_ncrna_ecorna_full_ft_best.sh
 ```
 
 See the repository root `README.md` for end-to-end command examples.

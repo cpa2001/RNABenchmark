@@ -3,9 +3,11 @@
 from .modeling_ecorna import (
     EcoRNAForSequenceClassification,
     EcoRNAForNucleotideLevel,
+    EcoRNALayerWeightedPooler,
 )
 
 __all__ = [
     "EcoRNAForSequenceClassification",
     "EcoRNAForNucleotideLevel",
+    "EcoRNALayerWeightedPooler",
 ]

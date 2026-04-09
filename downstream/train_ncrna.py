@@ -14,7 +14,6 @@ import transformers
 
 import numpy as np
 from torch.utils.data import Dataset
-import pdb
 
 
 os.environ["WANDB_DISABLED"] = "true"
@@ -72,7 +71,6 @@ class TrainingArguments(transformers.TrainingArguments):
     per_device_train_batch_size: int = field(default=1)
     per_device_eval_batch_size: int = field(default=1)
     num_train_epochs: int = field(default=1)
-    fp16: bool = field(default=False)
     logging_steps: int = field(default=100)
     save_steps: int = field(default=100)
     eval_steps: int = field(default=100)
@@ -89,7 +87,6 @@ class TrainingArguments(transformers.TrainingArguments):
     eval_and_save_results: bool = field(default=True)
     save_model: bool = field(default=False)
     seed: int = field(default=42)
-    fp16: bool = field(default=False)
     metric_for_best_model: str = field(default="accuracy")
     stage: str = field(default='0')
     model_type: str = field(default='rna')
@@ -99,8 +96,12 @@ class TrainingArguments(transformers.TrainingArguments):
     attn_implementation: str = field(default="eager")
     dataloader_num_workers: int = field(default=4)
     dataloader_prefetch_factor: int = field(default=2)
-    ecorna_pooling_strategy: str = field(default="cls_tanh")
+    ecorna_pooling_strategy: str = field(default="weighted_layer_content")
+    ecorna_pooling_cells: str = field(default="")
     ecorna_num_loops: int = field(default=-1)
+    freeze_backbone: bool = field(default=False)
+
+
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
     state_dict = trainer.model.state_dict()
@@ -241,6 +242,168 @@ def get_parameter_number(model):
     total_num = sum(p.numel() for p in model.parameters())
     trainable_num = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return {'Total': total_num, 'Trainable': trainable_num}
+
+
+def set_module_trainable(module, trainable):
+    if module is None:
+        return
+    for param in module.parameters():
+        param.requires_grad = trainable
+
+
+def get_trainable_parameter_names(model):
+    return [name for name, param in model.named_parameters() if param.requires_grad]
+
+
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def get_ecorna_runtime_diagnostics(model):
+    base_model = unwrap_model(model)
+    if hasattr(base_model, "get_runtime_diagnostics"):
+        return base_model.get_runtime_diagnostics()
+    if hasattr(base_model, "get_loop_layer_mix_stats"):
+        return base_model.get_loop_layer_mix_stats()
+    return {}
+
+
+def reset_ecorna_runtime_diagnostics(model):
+    base_model = unwrap_model(model)
+    if hasattr(base_model, "reset_runtime_diagnostics"):
+        base_model.reset_runtime_diagnostics()
+
+
+def get_frozen_readout_component_names(model, training_args):
+    names = [name for name, _ in get_frozen_readout_modules(model, training_args)]
+    if (
+        training_args.model_type == 'ecorna'
+        and training_args.ecorna_pooling_strategy in ("layer_weighted", "loop_layer_scalar_mix_content")
+        and getattr(model, "loop_layer_mix_logits", None) is not None
+    ):
+        names.append("pooler.loop_layer_mix_logits")
+    return names
+
+
+def log_and_validate_ecorna_special_tokens(tokenizer, model, training_args):
+    base_model = unwrap_model(model)
+    config = base_model.config
+    token_attrs = ("cls_token_id", "sep_token_id", "eos_token_id", "pad_token_id")
+    tokenizer_truth = {attr: getattr(tokenizer, attr, None) for attr in token_attrs}
+    config_truth = {attr: getattr(config, attr, None) for attr in token_attrs}
+
+    mismatches = [
+        attr for attr in token_attrs
+        if tokenizer_truth[attr] != config_truth[attr]
+    ]
+    if mismatches:
+        raise ValueError(
+            f"EcoRNA tokenizer/config special token mismatch for {mismatches}: "
+            f"tokenizer={tokenizer_truth}, config={config_truth}"
+        )
+
+    sample_sequence = "AUGC"
+    sample_encoding = tokenizer(sample_sequence, add_special_tokens=True)
+    sample_ids = sample_encoding["input_ids"]
+    sample_tokens = tokenizer.convert_ids_to_tokens(sample_ids)
+    expected_cls = tokenizer_truth["cls_token_id"]
+    expected_sep = tokenizer_truth["sep_token_id"]
+    special_ids = {
+        token_id
+        for token_id in tokenizer_truth.values()
+        if token_id is not None
+    }
+
+    if not sample_ids:
+        raise ValueError("EcoRNA tokenizer produced an empty encoding for the startup sample.")
+    if expected_cls is None or sample_ids[0] != expected_cls:
+        raise ValueError(
+            f"EcoRNA startup tokenization does not begin with CLS: ids={sample_ids}, tokens={sample_tokens}"
+        )
+    if expected_sep is None or sample_ids[-1] != expected_sep:
+        raise ValueError(
+            f"EcoRNA startup tokenization does not end with SEP: ids={sample_ids}, tokens={sample_tokens}"
+        )
+    if len(sample_ids) < 3:
+        raise ValueError(
+            f"EcoRNA startup tokenization is too short to validate layout: ids={sample_ids}, tokens={sample_tokens}"
+        )
+
+    content_ids = sample_ids[1:-1]
+    leaked_special_ids = [token_id for token_id in content_ids if token_id in special_ids]
+    if leaked_special_ids:
+        raise ValueError(
+            "EcoRNA startup tokenization violates the expected [CLS] + content + [SEP] layout: "
+            f"ids={sample_ids}, tokens={sample_tokens}, leaked_special_ids={leaked_special_ids}"
+        )
+
+    if training_args.local_rank in [-1, 0]:
+        print("EcoRNA tokenizer/config special token truth:")
+        print(f"  tokenizer={tokenizer_truth}")
+        print(f"  config={config_truth}")
+        print("EcoRNA startup tokenization check:")
+        print(f"  sample_sequence={sample_sequence}")
+        print(f"  sample_ids={sample_ids}")
+        print(f"  sample_tokens={sample_tokens}")
+
+
+def get_frozen_readout_modules(model, training_args):
+    if training_args.model_type == 'rna-fm':
+        return [("rnafm.pooler", model.rnafm.pooler), ("classifier", model.classifier)]
+
+    if training_args.model_type != 'ecorna':
+        raise ValueError(
+            f"freeze_backbone is only supported for rna-fm and ecorna, got {training_args.model_type}"
+        )
+
+    strategy = training_args.ecorna_pooling_strategy
+    modules = [("classifier", model.classifier)]
+
+    if strategy in (
+        "cls",
+        "mean",
+        "content_mean",
+        "loop_mean_content",
+        "loop_mean_cls",
+        "cls_mean_concat",
+        "fixed_cell_content",
+        "fixed_cell_cls",
+    ):
+        pass
+    elif strategy in (
+        "layer_weighted",
+        "loop_layer_scalar_mix_content",
+        "loop_layer_attn_content",
+        "weighted_layer_content",
+        "weighted_cell_content",
+    ):
+        modules.insert(0, ("pooler", model.pooler))
+    elif strategy == "cls_tanh":
+        modules.insert(0, ("pooler", model.pooler))
+    elif strategy == "cls_ln":
+        modules.insert(0, ("cls_norm", model.cls_norm))
+    else:
+        raise ValueError(f"Unsupported pooling strategy for frozen readout: {strategy}")
+
+    return modules
+
+
+def maybe_freeze_backbone(model, training_args):
+    if not training_args.freeze_backbone:
+        return
+
+    for param in model.parameters():
+        param.requires_grad = False
+
+    for _, module in get_frozen_readout_modules(model, training_args):
+        set_module_trainable(module, True)
+
+    if (
+        training_args.model_type == 'ecorna'
+        and training_args.ecorna_pooling_strategy in ("layer_weighted", "loop_layer_scalar_mix_content")
+        and getattr(model, "loop_layer_mix_logits", None) is not None
+    ):
+        model.loop_layer_mix_logits.requires_grad = True
 
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
@@ -394,12 +557,31 @@ def train():
             trust_remote_code=True,
             token_type=training_args.token_type,
             pooling_strategy=training_args.ecorna_pooling_strategy,
+            pooling_cells=training_args.ecorna_pooling_cells,
             num_loops=num_loops,
         )     
-        
+    else:
+        raise ValueError(f"Unsupported model_type: {training_args.model_type}")
 
+    maybe_freeze_backbone(model, training_args)
+    if training_args.model_type == 'ecorna':
+        log_and_validate_ecorna_special_tokens(tokenizer, model, training_args)
+    parameter_counts = get_parameter_number(model)
+    if training_args.local_rank in [-1, 0]:
+        print(f"Freeze backbone: {training_args.freeze_backbone}")
+        print(f"Parameter counts: {parameter_counts}")
+        if training_args.freeze_backbone:
+            print(
+                "Frozen readout modules:",
+                get_frozen_readout_component_names(model, training_args),
+            )
+            print("Trainable parameters:")
+            for name in get_trainable_parameter_names(model):
+                print(f"  - {name}")
+        if training_args.model_type == 'ecorna':
+            print("EcoRNA initial diagnostics:")
+            print(f"  {get_ecorna_runtime_diagnostics(model)}")
 
-    # define trainer
     trainer = transformers.Trainer(model=model,
                                    tokenizer=tokenizer,
                                    args=training_args,
@@ -418,7 +600,15 @@ def train():
     # get the evaluation results from trainer
     if training_args.eval_and_save_results:
         results_path = os.path.join(training_args.output_dir, "results", training_args.run_name)
+        if training_args.model_type == 'ecorna':
+            reset_ecorna_runtime_diagnostics(trainer.model)
         results = trainer.evaluate(eval_dataset=test_dataset)
+        if training_args.model_type == 'ecorna':
+            runtime_diagnostics = get_ecorna_runtime_diagnostics(trainer.model)
+            results.update(runtime_diagnostics)
+            if training_args.local_rank in [-1, 0]:
+                print("EcoRNA runtime diagnostics:")
+                print(f"  {runtime_diagnostics}")
         print("on the test set:", results, "\n", results_path)
         os.makedirs(results_path, exist_ok=True)
         with open(os.path.join(results_path, "test_results.json"), "w") as f:
